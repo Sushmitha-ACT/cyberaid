@@ -1,0 +1,574 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// Auth.js Models
+// -----------------------------------------------------------------------------
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(uuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  role          Role      @default(USER)
+
+  accounts        Account[]
+  sessions        Session[]
+  incidents       Incident[]
+  auditEvents     AuditEvent[]
+  
+  bookmarks       Bookmark[]
+  readingProgress ReadingProgress[]
+  notifications   Notification[]
+  securityScore   SecurityScore?
+  userActivities  UserActivity[]
+
+  // Academy Gamification & Relations
+  xp                Int       @default(0)
+  learningStreak    Int       @default(0)
+  enrollments       StudentEnrollment[]
+  lessonProgress    LessonProgress[]
+  certificates      Certificate[]
+  achievements      Achievement[]
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// -----------------------------------------------------------------------------
+// Application Models
+// -----------------------------------------------------------------------------
+
+model Country {
+  id        String   @id @default(uuid())
+  code      String   @unique // ISO 3166-1 alpha-2 e.g. "US", "IN"
+  name      String
+  
+  incidents          Incident[]
+  officialResources  OfficialResource[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Platform {
+  id        String   @id @default(uuid())
+  name      String   @unique // e.g., "Google", "Facebook", "Bank"
+  category  String   // e.g., "Social Media", "Finance", "Email"
+  
+  incidents Incident[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Incident {
+  id          String   @id @default(uuid())
+  userId      String?  // Nullable for anonymous sessions
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  type        IncidentType
+  severity    SeverityLevel
+  status      IncidentStatus @default(OPEN)
+  
+  countryId   String
+  country     Country  @relation(fields: [countryId], references: [id])
+  
+  platformId  String?
+  platform    Platform? @relation(fields: [platformId], references: [id])
+  
+  answers     IncidentAnswer[]
+  steps       IncidentStep[]
+  contextData Json? // Stores the dynamic AI state: description, generated steps, verifications, severity justification
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  expiresAt   DateTime? // For automatic deletion (e.g. anonymous incidents)
+}
+
+enum IncidentType {
+  ACCOUNT_HACKED
+  EMAIL_HACKED
+  PHONE_LOST
+  MALWARE_INFECTION
+  FAKE_WEBSITE
+  FAKE_PROFILE
+  IDENTITY_THEFT
+  BANK_SCAM
+  QR_SCAM
+  SIM_SWAP
+  DATA_LEAK
+  CREDENTIAL_LEAK
+  BLACKMAIL
+  SEXTORTION
+  CRYPTO_SCAM
+  INVESTMENT_FRAUD
+  FAKE_JOB_SCAM
+  ONLINE_SHOPPING_FRAUD
+}
+
+enum SeverityLevel {
+  PREVENTIVE
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  ABANDONED
+}
+
+model IncidentAnswer {
+  id          String   @id @default(uuid())
+  incidentId  String
+  incident    Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  
+  questionId  String   // The canonical ID of the question asked
+  answerValue String   // The user's answer (should be encrypted at app level if sensitive, though we avoid sensitive data)
+  
+  createdAt   DateTime @default(now())
+}
+
+model IncidentStep {
+  id               String   @id @default(uuid())
+  incidentId       String
+  incident         Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  
+  checklistStepId  String
+  checklistStep    ChecklistStep @relation(fields: [checklistStepId], references: [id])
+  
+  status           StepStatus @default(PENDING)
+  completedAt      DateTime?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+enum StepStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+}
+
+// -----------------------------------------------------------------------------
+// Checklist Template Engine
+// -----------------------------------------------------------------------------
+
+model ChecklistTemplate {
+  id          String   @id @default(uuid())
+  version     Int      @default(1)
+  isPublished Boolean  @default(false)
+  
+  // Filtering Criteria
+  incidentType IncidentType
+  severity     SeverityLevel?
+  
+  steps       ChecklistStep[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([incidentType, version])
+}
+
+model ChecklistStep {
+  id                String   @id @default(uuid())
+  templateId        String
+  template          ChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  
+  order             Int
+  title             String
+  explanation       String   @db.Text
+  whyItMatters      String   @db.Text
+  priority          StepPriority
+  estimatedMinutes  Int
+  evidenceWarning   Boolean  @default(false)
+  
+  officialResourceId String?
+  officialResource   OfficialResource? @relation(fields: [officialResourceId], references: [id])
+  
+  incidentSteps     IncidentStep[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+enum StepPriority {
+  IMMEDIATE
+  HIGH
+  NORMAL
+}
+
+model OfficialResource {
+  id              String   @id @default(uuid())
+  organization    String
+  url             String
+  countryId       String
+  country         Country  @relation(fields: [countryId], references: [id])
+  
+  verifiedAt      DateTime
+  reviewerId      String
+  sourceCategory  String   // e.g. "Government", "Platform Support", "Non-Profit"
+  
+  checklistSteps  ChecklistStep[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// Auditing
+// -----------------------------------------------------------------------------
+
+model AuditEvent {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  action      String   // e.g. "TEMPLATE_PUBLISHED", "RESOURCE_VERIFIED"
+  entityType  String   // e.g. "ChecklistTemplate"
+  entityId    String
+  metadata    Json?    // Safe metadata without sensitive content
+  
+  createdAt   DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// Advanced Resources & CMS
+// -----------------------------------------------------------------------------
+
+model Guide {
+  id               String   @id @default(uuid())
+  title            String
+  description      String   @db.Text
+  content          String   @db.Text
+  difficulty       String   // e.g. "Beginner", "Advanced"
+  estimatedMinutes Int
+  category         String   // e.g. "Account Recovery", "Financial Fraud"
+  tags             String[]
+  isPublished      Boolean  @default(false)
+  
+  bookmarks        Bookmark[]
+  readingProgress  ReadingProgress[]
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Bookmark {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  guideId   String
+  guide     Guide    @relation(fields: [guideId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  
+  @@unique([userId, guideId])
+}
+
+model ReadingProgress {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  guideId   String
+  guide     Guide    @relation(fields: [guideId], references: [id], onDelete: Cascade)
+  
+  progress  Int      // Percentage 0-100
+  isCompleted Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+  
+  @@unique([userId, guideId])
+}
+
+// -----------------------------------------------------------------------------
+// Notifications & Alerts
+// -----------------------------------------------------------------------------
+
+model ThreatAlert {
+  id          String   @id @default(uuid())
+  title       String
+  description String   @db.Text
+  severity    SeverityLevel
+  isActive    Boolean  @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title       String
+  message     String   @db.Text
+  type        String   // e.g. "REMINDER", "ALERT", "SYSTEM"
+  isRead      Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+}
+
+model SecurityScore {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  score       Int      // 0-100
+  lastCalculated DateTime @default(now())
+  factors     Json?    // e.g. { mfaEnabled: true, reusedPasswords: false }
+}
+
+model UserActivity {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  action      String   // e.g. "LOGGED_IN", "STARTED_ASSESSMENT"
+  metadata    Json?
+  
+  createdAt   DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// CyberAid Academy (LMS)
+// -----------------------------------------------------------------------------
+
+model Category {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?  @db.Text
+  icon        String?  // Lucide icon name
+
+  courses     Course[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Course {
+  id              String   @id @default(uuid())
+  title           String
+  description     String   @db.Text
+  difficulty      String   // e.g. "Beginner", "Intermediate"
+  estimatedHours  Float
+  isPublished     Boolean  @default(false)
+  instructor      String   @default("CyberAid AI Mentor")
+  thumbnailUrl    String?
+
+  categoryId      String
+  category        Category @relation(fields: [categoryId], references: [id])
+
+  modules         Module[]
+  enrollments     StudentEnrollment[]
+  certificates    Certificate[]
+  finalExam       FinalExam?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Module {
+  id          String   @id @default(uuid())
+  title       String
+  order       Int
+
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  lessons     Lesson[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Lesson {
+  id              String   @id @default(uuid())
+  title           String
+  content         String   @db.Text
+  order           Int
+  estimatedMinutes Int
+
+  moduleId        String
+  module          Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  video           Video?
+  quiz            Quiz?
+  progress        LessonProgress[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Video {
+  id          String   @id @default(uuid())
+  youtubeId   String   // The video ID
+  duration    Int      // in seconds
+  transcript  String?  @db.Text
+
+  lessonId    String   @unique
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+}
+
+model Quiz {
+  id          String   @id @default(uuid())
+  title       String
+  passingScore Int     @default(80)
+
+  lessonId    String   @unique
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  questions   Question[]
+}
+
+model Question {
+  id          String   @id @default(uuid())
+  text        String   @db.Text
+  explanation String?  @db.Text
+
+  quizId      String?
+  quiz        Quiz?    @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  examId      String?
+  exam        FinalExam? @relation(fields: [examId], references: [id], onDelete: Cascade)
+
+  answers     Answer[]
+}
+
+model Answer {
+  id          String   @id @default(uuid())
+  text        String
+  isCorrect   Boolean  @default(false)
+
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
+
+model FinalExam {
+  id          String   @id @default(uuid())
+  title       String
+  timeLimit   Int      @default(60) // minutes
+  passingScore Int     @default(80)
+
+  courseId    String   @unique
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  questions   Question[]
+}
+
+model StudentEnrollment {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  progress    Int      @default(0) // Percentage 0-100
+  isCompleted Boolean  @default(false)
+  completedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, courseId])
+}
+
+model LessonProgress {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  lessonId    String
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  isCompleted Boolean  @default(false)
+  videoProgress Int    @default(0) // percentage watched
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, lessonId])
+}
+
+model Certificate {
+  id          String   @id @default(uuid())
+  uuid        String   @unique @default(uuid()) // Public verification ID
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  issuedAt    DateTime @default(now())
+  signature   String   // cryptographic hash
+
+  @@unique([userId, courseId])
+}
+
+model Achievement {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  badgeIcon   String
+  xpReward    Int
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+}
